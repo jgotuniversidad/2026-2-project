@@ -1,7 +1,7 @@
 name: Enviar Entrega al Repositorio de Evaluación
 
 on:
-  # Cambiamos 'pull_request' por 'pull_request_target' para desbloquear los secretos de forma segura
+  # Se activa al abrir o actualizar un PR hacia la rama develop
   pull_request_target:
     branches:
       - develop
@@ -14,7 +14,7 @@ jobs:
       - name: Code Checkout
         uses: actions/checkout@v4
         with:
-          # Esto asegura que descargue el código que el alumno está enviando en el PR
+          # Descarga el código exacto que envió el alumno en su PR
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
@@ -33,17 +33,13 @@ jobs:
         run: |
           RAMA_LOCAL="entrega-${ALUMNO}"
           
-          # 1. Autenticar la herramienta CLI de GitHub
+          # 1. Autenticar la herramienta de consola de GitHub (GitHub CLI)
           echo "${TOKEN}" | gh auth login --with-token
           
-          # 2. Configurar la URL remota usando el protocolo HTTPS autenticado
-          REMOTE_URL="https://x-access-token:${TOKEN}@github.com/${REPO_DESTINO}.git"
+          # 2. Empujar el código usando el token inyectado directamente en la URL de destino
+          git push -f "https://x-access-token:${TOKEN}@github.com/${REPO_DESTINO}" HEAD:refs/heads/${RAMA_LOCAL}
           
-          # 3. Conectar y empujar al repositorio destino privado
-          git remote add destino "$REMOTE_URL"
-          git push -f destino HEAD:refs/heads/${RAMA_LOCAL}
-          
-          # 4. Crear el Pull Request en el repositorio privado del profesor
+          # 3. Crear el Pull Request en el repositorio privado del profesor apuntando a su propia develop
           gh pr create \
             --repo "${REPO_DESTINO}" \
             --head "${RAMA_LOCAL}" \
