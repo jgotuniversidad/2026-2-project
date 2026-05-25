@@ -13,13 +13,13 @@ jobs:
   sync-to-private:
     runs-on: ubuntu-latest
     steps:
-      - name: Validar configuración
+      - name: Validar token
         env:
           GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::Token PROFE_GITHUB_TOKEN no disponible"
+            echo "::error::Token no disponible"
             exit 1
           fi
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -31,11 +31,10 @@ jobs:
           fi
           echo "Configuracion valida"
 
-      - name: Checkout código del alumno
+      - name: Checkout codigo del alumno (desde su fork)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
           path: student-code
@@ -53,6 +52,7 @@ jobs:
           GIT_COMMITTER_EMAIL: "evaluador@universidad.edu"
         run: |
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
+          BRANCH_NAME="entrega-${ALUMNO}-${BRANCH_ORIGINAL}"
           
           echo "Clonando repo privado..."
           git clone "${REPO_URL}" workdir
@@ -61,7 +61,7 @@ jobs:
           git config user.name "Evaluador Automático"
           git config user.email "evaluador@universidad.edu"
           
-          echo "Actualizando referencias remotas..."
+          echo "Fetch remoto..."
           git fetch origin
           
           if git show-ref --verify --quiet refs/remotes/origin/develop; then
@@ -75,32 +75,33 @@ jobs:
             echo "Base: master"
           fi
           
-          echo "Creando/actualizando rama: ${BRANCH_ORIGINAL}"
-          git checkout -B "${BRANCH_ORIGINAL}"
+          echo "Creando rama: ${BRANCH_NAME}"
+          git checkout -B "${BRANCH_NAME}"
           
-          echo "Limpiando contenido previo..."
+          echo "Limpiando contenido..."
           git rm -rf . 2>/dev/null || true
           find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
           
-          echo "Copiando código del alumno..."
+          echo "Copiando codigo del alumno..."
           cp -rf ../student-code/. ./
           
-          echo "Agregando metadata de entrega..."
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "{\"alumno\":\"${ALUMNO}\",\"rama\":\"${BRANCH_ORIGINAL}\",\"pr_original\":\"${PR_URL}\",\"sincronizado\":\"${TIMESTAMP}\"}" > .entrega-info.json
+          echo "Creando archivo de control..."
+          TIMESTAMP=$(date +%s%N)
+          echo "alumno=${ALUMNO}" > .sync-control.txt
+          echo "rama_original=${BRANCH_ORIGINAL}" >> .sync-control.txt
+          echo "pr_url=${PR_URL}" >> .sync-control.txt
+          echo "timestamp=${TIMESTAMP}" >> .sync-control.txt
           
-          echo "Estado antes del commit:"
+          echo "Estado git:"
           git status --short
           
           echo "Creando commit..."
           git add -A
-          COMMIT_MSG="Entrega sincronizada: ${ALUMNO} - Rama: ${BRANCH_ORIGINAL} - PR: ${PR_URL}"
-          git -c user.name="Evaluador Automático" -c user.email="evaluador@universidad.edu" commit -m "${COMMIT_MSG}"
+          git -c user.name="Evaluador Automático" -c user.email="evaluador@universidad.edu" commit -m "Entrega: ${ALUMNO} - ${BRANCH_ORIGINAL}"
           
-          echo "Haciendo push a repo privado..."
-          git push -f "${REPO_URL}" "${BRANCH_ORIGINAL}"
+          echo "Haciendo push..."
+          git push -f "${REPO_URL}" "${BRANCH_NAME}"
           
           echo "Sincronizacion completada"
-          echo "Repo: ${REPO_DESTINO}"
-          echo "Rama: ${BRANCH_ORIGINAL}"
-          echo "URL: https://github.com/${REPO_DESTINO}/tree/${BRANCH_ORIGINAL}"
+          echo "Rama: ${BRANCH_NAME}"
+          echo "URL: https://github.com/${REPO_DESTINO}/tree/${BRANCH_NAME}"
