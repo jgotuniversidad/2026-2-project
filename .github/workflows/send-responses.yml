@@ -1,7 +1,6 @@
 name: Enviar Entrega al Repositorio de Evaluación
 
 on:
-  # Se activa al abrir o actualizar un PR hacia la rama develop
   pull_request_target:
     branches:
       - develop
@@ -14,7 +13,6 @@ jobs:
       - name: Code Checkout
         uses: actions/checkout@v4
         with:
-          # Descarga el código exacto que envió el alumno en su PR
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
@@ -26,20 +24,26 @@ jobs:
       - name: Empujar rama y crear PR en repositorio privado
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-          TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }} # Usamos la variable nativa de GitHub CLI
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
           ALUMNO: ${{ github.event.pull_request.user.login }}
           URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
         run: |
           RAMA_LOCAL="entrega-${ALUMNO}"
           
-          # 1. Autenticar la herramienta de consola de GitHub (GitHub CLI)
-          echo "${TOKEN}" | gh auth login --with-token
+          # 1. Validar que el entorno detecte el token correctamente
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Error: El secreto PROFE_GITHUB_TOKEN no está llegando al script."
+            exit 1
+          fi
           
-          # 2. Empujar el código usando el token inyectado directamente en la URL de destino
-          git push -f "https://x-access-token:${TOKEN}@github.com/${REPO_DESTINO}" HEAD:refs/heads/${RAMA_LOCAL}
+          # 2. Configurar Git para usar el token de la CLI de forma transparente en el Push
+          gh auth setup-git
           
-          # 3. Crear el Pull Request en el repositorio privado del profesor apuntando a su propia develop
+          # 3. Hacer el push directo usando la URL estándar de GitHub (la CLI se encarga de la clave)
+          git push -f "https://github.com/${REPO_DESTINO}.git" HEAD:refs/heads/${RAMA_LOCAL}
+          
+          # 4. Crear el Pull Request en el repositorio privado
           gh pr create \
             --repo "${REPO_DESTINO}" \
             --head "${RAMA_LOCAL}" \
