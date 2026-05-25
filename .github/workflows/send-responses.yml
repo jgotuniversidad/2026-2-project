@@ -23,20 +23,12 @@ jobs:
             echo "::error::Token no disponible"
             exit 1
           fi
-          # Verificar acceso al repo
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/$REPO_DESTINO")
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::error::No se puede acceder al repo privado (HTTP $HTTP_CODE)"
             exit 1
-          fi
-          # Verificar que existe la rama develop
-          DEV_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO_DESTINO/branches/develop")
-          if [ "$DEV_EXISTS" != "200" ]; then
-            echo "::warning::La rama 'develop' no existe en el repo privado. Se creará automáticamente."
           fi
           echo "Configuracion valida"
 
@@ -48,126 +40,7 @@ jobs:
           persist-credentials: false
           path: student-code
 
-      - name: Preparar entorno y rama de entrega
-        env:
-          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
-          REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
-          ALUMNO: ${{ github.event.pull_request.user.login }}
-        run: |
-          BRANCH_NAME="entrega-${ALUMNO}"
-          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
-          
-          echo "=== PASO 1: Clonar repo privado ==="
-          rm -rf private-repo 2>/dev/null || true
-          git clone "${REPO_URL}" private-repo
-          cd private-repo
-          
-          echo "=== PASO 2: Verificar/Crear rama develop ==="
-          # Verificar si develop existe remotamente
-          if ! git ls-remote --exit-code origin refs/heads/develop > /dev/null 2>&1; then
-            echo "develop no existe remotamente, creándola desde main/master..."
-            # Usar la rama por defecto como base
-            DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d' ' -f5)
-            git checkout "${DEFAULT_BRANCH}"
-            git checkout -b develop
-            git push -u origin develop
-            echo "Rama develop creada desde ${DEFAULT_BRANCH}"
-          else
-            echo "develop existe, haciendo checkout..."
-            git fetch origin develop:develop
-            git checkout develop
-          fi
-          
-          echo "=== PASO 3: Crear rama de entrega ==="
-          BASE_COMMIT=$(git rev-parse HEAD)
-          echo "Commit base (develop): ${BASE_COMMIT}"
-          git checkout -B "${BRANCH_NAME}"
-          
-          echo "=== PASO 4: Limpiar y copiar código ==="
-          # Eliminar todos los archivos trackeados
-          git ls-files -z | xargs -0 rm -f
-          # Eliminar directorios vacíos restantes
-          find . -type d -empty -delete
-          # Copiar código del alumno
-          cp -rf ../student-code/. ./
-          
-          echo "=== PASO 5: Crear marker file único ==="
-          # Usar uuidgen o RANDOM para garantizar unicidad
-          UNIQUE_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "${RANDOM}${RANDOM}${RANDOM}")
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
-          echo "{\"alumno\":\"${ALUMNO}\",\"timestamp\":\"${TIMESTAMP}\",\"unique_id\":\"${UNIQUE_ID}\"}" > .entrega-marker.json
-          
-          echo "=== DEBUG: Estado antes del commit ==="
-          echo "Archivos nuevos/modificados:"
-          git status --short
-          echo "Archivos en el directorio:"
-          ls -la | head -20
-
-      - name: Commit y push verificado
-        env:
-          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
-          REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
-          ALUMNO: ${{ github.event.pull_request.user.login }}
-          PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
-        run: |
-          BRANCH_NAME="entrega-${ALUMNO}"
-          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
-          
-          cd private-repo
-          
-          git config user.name "Evaluador Automático"
-          git config user.email "evaluador@universidad.edu"
-          
-          echo "=== PASO 6: Crear commit ==="
-          git add -A
-          
-          # Verificar que hay cambios antes de commitear
-          if ! git diff --cached --quiet; then
-            echo "Hay cambios para commitear"
-          else
-            echo "::warning::No hay cambios detectados, agregando marker forzado..."
-            echo "# Force: $(date +%s%N)" >> .entrega-marker.json
-            git add .entrega-marker.json
-          fi
-          
-          git commit -m "Entrega: ${ALUMNO} - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          
-          NEW_COMMIT=$(git rev-parse HEAD)
-          echo "Nuevo commit: ${NEW_COMMIT}"
-          
-          echo "=== PASO 7: Verificar diferencia con develop ==="
-          # Obtener el commit base de develop nuevamente
-          git fetch origin develop
-          BASE_COMMIT_REMOTE=$(git rev-parse origin/develop)
-          echo "Base remote develop: ${BASE_COMMIT_REMOTE}"
-          echo "Nuestro commit: ${NEW_COMMIT}"
-          
-          if [ "${BASE_COMMIT_REMOTE}" = "${NEW_COMMIT}" ]; then
-            echo "::error::El commit nuevo es igual al de develop! Algo falló."
-            exit 1
-          fi
-          
-          COMMITS_DIFF=$(git rev-list origin/develop..HEAD --count)
-          echo "Commits diferentes: ${COMMITS_DIFF}"
-          
-          if [ "${COMMITS_DIFF}" -eq 0 ]; then
-            echo "::error::No hay commits diferentes después del push. Revisar lógica."
-            git log -3 --oneline
-            exit 1
-          fi
-          
-          echo "=== PASO 8: Push ==="
-          git push -f "${REPO_URL}" "${BRANCH_NAME}"
-          echo "Push completado"
-          
-          # Verificar push remoto
-          REMOTE_COMMIT=$(git ls-remote "${REPO_URL}" "${BRANCH_NAME}" | awk '{print $1}')
-          echo "Commit remoto confirmado: ${REMOTE_COMMIT}"
-          if [ "${REMOTE_COMMIT}" != "${NEW_COMMIT}" ]; then
-            echo "::warning::El commit remoto no coincide con el local"
-          fi
-
-      - name: Crear PR en repositorio privado
+      - name: Preparar y sincronizar entrega
         env:
           GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
@@ -175,31 +48,96 @@ jobs:
           PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
+          # Variables
           BRANCH_NAME="entrega-${ALUMNO}"
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          echo "=== ESPERANDO INDEXACIÓN DE GITHUB ==="
-          sleep 30
+          echo ">>> Clonando repo privado..."
+          git clone "${REPO_URL}" workdir
+          cd workdir
           
-          echo "=== VERIFICANDO COMMITS VÍA API ==="
-          COMPARE=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO_DESTINO/compare/develop...${BRANCH_NAME}")
+          echo ">>> Configurando git..."
+          git config user.name "Evaluador Automático"
+          git config user.email "evaluador@universidad.edu"
           
-          AHEAD_BY=$(echo "$COMPARE" | grep -o '"ahead_by":[0-9]*' | grep -o '[0-9]*' | head -1)
-          COMMITS_API=$(echo "$COMPARE" | grep -o '"commits":\[' | head -1)
+          echo ">>> Asegurando rama develop como base..."
+          # Fetch normal (sin especificar ref:ref que causa conflicto)
+          git fetch origin
           
-          echo "ahead_by desde API: ${AHEAD_BY:-0}"
-          echo "¿Hay array de commits? ${COMMITS_API:-no}"
-          
-          if [ "${AHEAD_BY:-0}" -eq 0 ]; then
-            echo "::warning::API reporta 0 commits ahead. Debug adicional:"
-            echo "Respuesta completa de compare (primeras 500 chars):"
-            echo "$COMPARE" | head -c 500
+          # Intentar checkout de develop, fallback a main o master
+          if git show-ref --verify --quiet refs/remotes/origin/develop; then
+            git checkout develop
+            echo "Base: develop"
+          elif git show-ref --verify --quiet refs/remotes/origin/main; then
+            git checkout main
+            # Crear develop si no existe
+            git checkout -b develop
+            git push -u origin develop
+            echo "Base: main -> develop creada"
+          else
+            git checkout master
+            git checkout -b develop
+            git push -u origin develop
+            echo "Base: master -> develop creada"
           fi
           
-          echo "=== BUSCANDO PR EXISTENTE ==="
-          PR_LIST=$(curl -s \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
+          BASE_COMMIT=$(git rev-parse HEAD)
+          echo "Commit base: ${BASE_COMMIT}"
+          
+          echo ">>> Creando rama de entrega: ${BRANCH_NAME}"
+          git checkout -B "${BRANCH_NAME}"
+          
+          echo ">>> Limpiando contenido previo..."
+          git rm -rf . 2>/dev/null || true
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
+          
+          echo ">>> Copiando código del alumno..."
+          cp -rf ../student-code/. ./
+          
+          echo ">>> Creando marker file único..."
+          UNIQUE_ID="${RANDOM}${RANDOM}$(date +%s)"
+          echo "{\"alumno\":\"${ALUMNO}\",\"unique_id\":\"${UNIQUE_ID}\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > .entrega-marker.json
+          
+          echo ">>> Estado git antes del commit:"
+          git status --short
+          
+          echo ">>> Creando commit..."
+          git add -A
+          
+          # Si no hay cambios detectados, forzar marker adicional
+          if git diff --cached --quiet; then
+            echo "# Force-$(date +%s%N)" >> .entrega-marker.json
+            git add .entrega-marker.json
+            echo "Marker forzado agregado"
+          fi
+          
+          git commit -m "Entrega: ${ALUMNO} - ${PR_URL_ORIGINAL}"
+          NEW_COMMIT=$(git rev-parse HEAD)
+          echo "Commit creado: ${NEW_COMMIT}"
+          
+          echo ">>> Verificando diferencia con develop..."
+          COMMITS_AHEAD=$(git rev-list origin/develop..HEAD --count 2>/dev/null || echo "0")
+          echo "Commits ahead of origin/develop: ${COMMITS_AHEAD}"
+          
+          if [ "${COMMITS_AHEAD}" -eq 0 ]; then
+            echo "::warning::No se detectan commits diferentes. Intentando push igual..."
+          fi
+          
+          echo ">>> Haciendo push..."
+          git push -f "${REPO_URL}" "${BRANCH_NAME}"
+          echo "Push completado"
+          
+          echo ">>> Esperando indexación de GitHub..."
+          sleep 25
+          
+          echo ">>> Verificando vía API..."
+          COMPARE=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_DESTINO/compare/develop...${BRANCH_NAME}")
+          AHEAD_BY=$(echo "$COMPARE" | grep -o '"ahead_by":[0-9]*' | grep -o '[0-9]*' | head -1)
+          echo "ahead_by (API): ${AHEAD_BY:-0}"
+          
+          echo ">>> Buscando/creando PR..."
+          PR_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/$REPO_DESTINO/pulls?head=jgotuniversidad:${BRANCH_NAME}&base=develop&state=open")
           
           if echo "$PR_LIST" | grep -q '"number"'; then
@@ -207,33 +145,24 @@ jobs:
             echo "Actualizando PR #${EXISTING}"
             curl -s -X PATCH \
               -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
               -H "Content-Type: application/json" \
               "https://api.github.com/repos/$REPO_DESTINO/pulls/$EXISTING" \
-              -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"body\":\"PR Original: ${PR_URL_ORIGINAL}\"}"
-            echo "PR #${EXISTING} actualizado"
+              -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"body\":\"PR: ${PR_URL_ORIGINAL}\"}"
           else
-            echo "=== CREANDO NUEVO PR ==="
-          
-            CREATE_RESPONSE=$(curl -s -w "|||HTTP:%{http_code}" -X POST \
+            echo "Creando nuevo PR"
+            CREATE_RESP=$(curl -s -w "|||HTTP:%{http_code}" -X POST \
               -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
               -H "Content-Type: application/json" \
               "https://api.github.com/repos/$REPO_DESTINO/pulls" \
-              -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"head\":\"${BRANCH_NAME}\",\"base\":\"develop\",\"body\":\"PR Original: ${PR_URL_ORIGINAL}\"}")
+              -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"head\":\"${BRANCH_NAME}\",\"base\":\"develop\",\"body\":\"PR: ${PR_URL_ORIGINAL}\"}")
           
-            HTTP_CODE=$(echo "$CREATE_RESPONSE" | grep -o '|||HTTP:[0-9]*' | cut -d: -f2)
-            RESPONSE_BODY=$(echo "$CREATE_RESPONSE" | sed 's/|||HTTP:[0-9]*//')
+            HTTP_CODE=$(echo "$CREATE_RESP" | grep -o '|||HTTP:[0-9]*' | cut -d: -f2)
+            RESP_BODY=$(echo "$CREATE_RESP" | sed 's/|||HTTP:[0-9]*//')
           
             if [ "$HTTP_CODE" = "201" ]; then
-              NEW_PR=$(echo "$RESPONSE_BODY" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
-              echo "✅✅✅ PR #${NEW_PR} CREADO EXITOSAMENTE ✅✅✅"
+              NEW_PR=$(echo "$RESP_BODY" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
+              echo "✅ PR #${NEW_PR} creado exitosamente"
             else
-              echo "::error::No se pudo crear el PR (HTTP ${HTTP_CODE})"
-              echo "Respuesta: ${RESPONSE_BODY}"
-              # Mostrar errores específicos de validación
-              if echo "$RESPONSE_BODY" | grep -q "No commits between"; then
-                echo "💡 Solución: Verifica que 'develop' exista en el repo privado y que el commit se haya pushado correctamente"
-              fi
+              echo "⚠️ No se pudo crear PR (HTTP ${HTTP_CODE}): ${RESP_BODY}"
             fi
           fi
