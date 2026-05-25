@@ -1,8 +1,9 @@
-name: send-responses.yml
+name: Enviar Entrega al Repositorio de Evaluación
+
 on:
   pull_request:
     branches:
-      - develop # Ahora el action se activa cuando el PR va hacia 'develop'
+      - develop
     types: [opened, synchronize]
 
 jobs:
@@ -22,6 +23,8 @@ jobs:
 
       - name: Empujar rama y crear PR en repositorio privado
         env:
+          # Forzamos a Node a usar la versión 24 para quitar la advertencia que viste
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
           TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
           ALUMNO: ${{ github.event.pull_request.user.login }}
@@ -30,14 +33,15 @@ jobs:
           RAMA_LOCAL="entrega-${ALUMNO}"
           REMOTE_URL="https://x-access-token:${TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          # Enviar el código al Repo B Privado
+          # Autenticar las herramientas globales de GitHub primero
+          echo "${TOKEN}" | gh auth login --with-token
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+          # Conectar y empujar al repositorio destino
           git remote add destino "$REMOTE_URL"
           git push -f destino HEAD:refs/heads/${RAMA_LOCAL}
           
-          # Autenticar GitHub CLI
-          echo "${TOKEN}" | gh auth login --with-token
-          
-          # Crear el PR en el Repo B Privado hacia su propia rama develop
+          # Crear el Pull Request en el repositorio privado
           gh pr create \
             --repo "${REPO_DESTINO}" \
             --head "${RAMA_LOCAL}" \
