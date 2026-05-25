@@ -1,0 +1,46 @@
+name: send-responses.yml
+on:
+  pull_request:
+    branches:
+      - develop # Ahora el action se activa cuando el PR va hacia 'develop'
+    types: [opened, synchronize]
+
+jobs:
+  copy-to-prof-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Configurar Git
+        run: |
+          git config --global user.name "Evaluador Automático"
+          git config --global user.email "evaluador@universidad.edu"
+
+      - name: Empujar rama y crear PR en repositorio privado
+        env:
+          TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
+          REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
+          ALUMNO: ${{ github.event.pull_request.user.login }}
+          URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
+        run: |
+          RAMA_LOCAL="entrega-${ALUMNO}"
+          REMOTE_URL="https://x-access-token:${TOKEN}@github.com/${REPO_DESTINO}.git"
+          
+          # Enviar el código al Repo B Privado
+          git remote add destino "$REMOTE_URL"
+          git push -f destino HEAD:refs/heads/${RAMA_LOCAL}
+          
+          # Autenticar GitHub CLI
+          echo "${TOKEN}" | gh auth login --with-token
+          
+          # Crear el PR en el Repo B Privado hacia su propia rama develop
+          gh pr create \
+            --repo "${REPO_DESTINO}" \
+            --head "${RAMA_LOCAL}" \
+            --base "develop" \
+            --title "Entrega de: ${ALUMNO}" \
+            --body "Código enviado automáticamente. PR Original: ${URL_ORIGINAL}" || echo "La rama ha sido actualizada en el repositorio privado."
