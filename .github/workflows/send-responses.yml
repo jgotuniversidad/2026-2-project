@@ -22,8 +22,6 @@ jobs:
           GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
         run: |
-          echo "=== Validando configuración ==="
-          
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::El secreto PROFE_GITHUB_TOKEN no está disponible"
             exit 1
@@ -35,12 +33,12 @@ jobs:
           
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::error::No se puede acceder al repo privado (HTTP $HTTP_CODE)"
-            exit 1
+            exit  1
           fi
           echo "✅ Configuración válida"
 
       # ─────────────────────────────────────────────────────────────
-      # STEP 1: Checkout del código del alumno
+      # STEP 1: Checkout del código del alumno (fuente)
       # ─────────────────────────────────────────────────────────────
       - name: Checkout código del alumno
         uses: actions/checkout@v4
@@ -48,20 +46,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+          path: student-code  # ✅ Clonar en subdirectorio para no mezclar
 
       # ─────────────────────────────────────────────────────────────
-      # STEP 2: Configurar Git
+      # STEP 2: Clonar repo privado y preparar rama desde develop
       # ─────────────────────────────────────────────────────────────
-      - name: Configurar Git
-        run: |
-          git config --global user.name "Evaluador Automático"
-          git config --global user.email "evaluador@universidad.edu"
-          git config --global --add safe.directory "*"
-
-      # ─────────────────────────────────────────────────────────────
-      # STEP 3: Push al repositorio privado
-      # ─────────────────────────────────────────────────────────────
-      - name: Push a repositorio privado
+      - name: Preparar rama desde develop del repo privado
         env:
           GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
@@ -70,90 +60,113 @@ jobs:
           BRANCH_NAME="entrega-${ALUMNO}"
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          echo "📤 Pushing to ${REPO_DESTINO} branch: ${BRANCH_NAME}"
-          git push -f "${REPO_URL}" "HEAD:refs/heads/${BRANCH_NAME}"
-          echo "✅ Push completado"
+          echo "📦 Clonando repo privado..."
+          git clone --depth 1 --branch develop "${REPO_URL}" private-repo
+          
+          cd private-repo
+          
+          echo "🌿 Creando/actualizando rama ${BRANCH_NAME} desde develop..."
+          git checkout -B "${BRANCH_NAME}"
+          
+          echo "🧹 Limpiando contenido anterior de la rama (excepto .git)..."
+          find . -type f ! -path './.git/*' ! -name '.git' -delete
+          find . -type d -empty ! -path './.git/*' -delete || true
+          
+          echo "📋 Copiando código del alumno..."
+          cp -rf ../student-code/* ./
+          cp -rf ../student-code/.[!.]* ./ 2>/dev/null || true  # Archivos ocultos
+          
+          echo "✅ Código copiado. Estado git:"
+          git status --short
 
       # ─────────────────────────────────────────────────────────────
-      # STEP 4: Crear PR en repo privado (versión ultra-simple)
+      # STEP 3: Commit y push al repo privado
       # ─────────────────────────────────────────────────────────────
-      - name: Crear PR en repositorio privado
+      - name: Commit y push al repo privado
         env:
           GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
           ALUMNO: ${{ github.event.pull_request.user.login }}
           PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           BRANCH_NAME="entrega-${ALUMNO}"
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          echo "🔍 Buscando si ya existe un PR para la rama: ${BRANCH_NAME}"
+          cd private-repo
           
-          # Buscar PR existente - versión simple sin grep -P
-          PR_LIST=$(curl -s \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$REPO_DESTINO/pulls?head=jgotuniversidad:${BRANCH_NAME}&base=develop&state=open")
+          git config user.name "Evaluador Automático"
+          git config user.email "evaluador@universidad.edu"
           
-          echo "📋 Respuesta de búsqueda de PRs: $PR_LIST"
-          
-          # Verificar si la respuesta contiene un número de PR (método simple)
-          if echo "$PR_LIST" | grep -q '"number"'; then
-            EXISTING=$(echo "$PR_LIST" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
-            echo "✅ PR existente encontrado: #${EXISTING}"
-          
-            # Actualizar PR existente
-            echo "🔄 Actualizando PR #${EXISTING}..."
-            curl -s -X PATCH \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO_DESTINO/pulls/$EXISTING" \
-              -H "Content-Type: application/json" \
-              -d '{
-                "title": "Entrega: '"${PR_TITLE}"' ('"${ALUMNO}"')",
-                "body": "Entrega automatizada desde: '"${PR_URL_ORIGINAL}"'"
-              }'
-            echo "✅ PR #${EXISTING} actualizado"
-          else
-            echo "🆕 No hay PR existente, creando nuevo..."
-          
-            # Crear nuevo PR - usando formato de JSON más compatible
-            echo "📡 Enviando solicitud POST para crear PR..."
-          
-            CREATE_RESPONSE=$(curl -s -w "|||HTTP_CODE:%{http_code}" \
-              -X POST \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Content-Type: application/json" \
-              "https://api.github.com/repos/$REPO_DESTINO/pulls" \
-              -d '{
-                "title": "Entrega: '"${PR_TITLE}"' ('"${ALUMNO}"')",
-                "head": "'"${BRANCH_NAME}"'",
-                "base": "develop",
-                "body": "Entrega automatizada desde: '"${PR_URL_ORIGINAL}"'"
-              }')
-          
-            echo "📋 Respuesta completa de creación: $CREATE_RESPONSE"
-          
-            # Extraer código HTTP y cuerpo
-            HTTP_CODE=$(echo "$CREATE_RESPONSE" | grep -o '|||HTTP_CODE:[0-9]*' | cut -d: -f2)
-            RESPONSE_BODY=$(echo "$CREATE_RESPONSE" | sed 's/|||HTTP_CODE:[0-9]*//')
-          
-            echo "🔢 Código HTTP recibido: $HTTP_CODE"
-          
-            if [ "$HTTP_CODE" = "201" ]; then
-              # Extraer número del nuevo PR
-              NEW_PR=$(echo "$RESPONSE_BODY" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
-              echo "✅✅✅ PR #${NEW_PR} CREADO EXITOSAMENTE ✅✅✅"
-            elif [ "$HTTP_CODE" = "422" ]; then
-              echo "⚠️ Error 422: Posible conflicto de datos"
-              echo "💡 Verifica que la rama '${BRANCH_NAME}' tenga commits y que 'develop' exista"
-              echo "📄 Detalle: $RESPONSE_BODY"
-            elif [ "$HTTP_CODE" = "403" ]; then
-              echo "⚠️ Error 403: Permiso denegado"
-              echo "💡 El token necesita permisos de 'pull_requests: write' en el repo privado"
-            else
-              echo "⚠️ Respuesta inesperada (HTTP $HTTP_CODE)"
-              echo "📄 Body: $RESPONSE_BODY"
-            fi
-          fi
+          echo "📝 Creando commit..."
+          git add -A
+          git commit -m "📝 Entrega de ${ALUMNO}
+
+Automatizado desde: ${PR_URL_ORIGINAL}
+Fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)" || echo "⚠️ Sin cambios para commitear"
+  
+  echo "📤 Haciendo push a ${BRANCH_NAME}..."
+  git push -f "${REPO_URL}" "${BRANCH_NAME}"
+  
+  echo "✅ Push completado"
+  
+  # ─────────────────────────────────────────────────────────────
+  # STEP 4: Crear/Actualizar PR en repo privado
+  # ─────────────────────────────────────────────────────────────
+  - name: Crear PR en repositorio privado
+    env:
+      GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
+      REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
+      ALUMNO: ${{ github.event.pull_request.user.login }}
+      PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    run: |
+      BRANCH_NAME="entrega-${ALUMNO}"
+      
+      echo "🔍 Buscando PR existente para: ${BRANCH_NAME}"
+      
+      # Buscar PR abierto existente
+      PR_LIST=$(curl -s \
+        -H "Authorization: token $GH_TOKEN" \
+        -H "Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/$REPO_DESTINO/pulls?head=jgotuniversidad:${BRANCH_NAME}&base=develop&state=open")
+      
+      if echo "$PR_LIST" | grep -q '"number"'; then
+        EXISTING=$(echo "$PR_LIST" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
+        echo "✅ Actualizando PR existente #${EXISTING}"
+      
+        curl -s -X PATCH \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -H "Content-Type: application/json" \
+          "https://api.github.com/repos/$REPO_DESTINO/pulls/$EXISTING" \
+          -d '{
+            "title": "Entrega: '"${PR_TITLE}"' ('"${ALUMNO}"')",
+            "body": "🔗 PR Original: '"${PR_URL_ORIGINAL}"'"
+          }'
+        echo "✅ PR #${EXISTING} actualizado"
+      else
+        echo "🆕 Creando nuevo PR..."
+      
+        CREATE_RESPONSE=$(curl -s -w "|||HTTP_CODE:%{http_code}" -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -H "Content-Type: application/json" \
+          "https://api.github.com/repos/$REPO_DESTINO/pulls" \
+          -d '{
+            "title": "Entrega: '"${PR_TITLE}"' ('"${ALUMNO}"')",
+            "head": "'"${BRANCH_NAME}"'",
+            "base": "develop",
+            "body": "🔗 PR Original: '"${PR_URL_ORIGINAL}"'"
+          }')
+      
+        HTTP_CODE=$(echo "$CREATE_RESPONSE" | grep -o '|||HTTP_CODE:[0-9]*' | cut -d: -f2)
+        RESPONSE_BODY=$(echo "$CREATE_RESPONSE" | sed 's/|||HTTP_CODE:[0-9]*//')
+      
+        if [ "$HTTP_CODE" = "201" ]; then
+          NEW_PR=$(echo "$RESPONSE_BODY" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
+          echo "✅✅✅ PR #${NEW_PR} CREADO EXITOSAMENTE ✅✅✅"
+        else
+          echo "⚠️ No se pudo crear el PR (HTTP $HTTP_CODE)"
+          echo "📄 Respuesta: $RESPONSE_BODY"
+        fi
+      fi
