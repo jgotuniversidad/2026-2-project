@@ -48,16 +48,28 @@ jobs:
         run: |
           BRANCH_NAME="entrega-${ALUMNO}"
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
-          echo "Clonando repo privado..."
-          git clone --depth 1 --branch develop "${REPO_URL}" private-repo
+          
+          echo "Clonando repo privado (develop)..."
+          git clone "${REPO_URL}" private-repo
+          
           cd private-repo
+          git fetch origin develop:develop
+          git checkout develop
+          
           echo "Creando rama ${BRANCH_NAME} desde develop..."
           git checkout -B "${BRANCH_NAME}"
-          echo "Limpiando contenido anterior..."
+          
+          echo "Limpiando contenido de la rama..."
           find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          
           echo "Copiando código del alumno..."
           cp -rf ../student-code/. ./
-          echo "Listo para commitear"
+          
+          echo "Archivos después de copiar:"
+          ls -la
+          
+          echo "Estado de git:"
+          git status
 
       - name: Commit y push al repo privado
         env:
@@ -68,14 +80,24 @@ jobs:
         run: |
           BRANCH_NAME="entrega-${ALUMNO}"
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
+          
           cd private-repo
+          
           git config user.name "Evaluador Automático"
           git config user.email "evaluador@universidad.edu"
-          echo "Creando commit..."
+          
+          echo "Preparando commit..."
           git add -A
-          git commit -m "Entrega de ${ALUMNO} - ${PR_URL_ORIGINAL}" || echo "Sin cambios"
+          
+          echo "Forzando commit (incluso si no hay cambios detectados)..."
+          git commit --allow-empty -m "Entrega de ${ALUMNO} - ${PR_URL_ORIGINAL}"
+          
+          echo "Verificando que hay commits diferentes de develop..."
+          git log develop..HEAD --oneline || echo "Sin commits nuevos (pero el --allow-empty debería haber creado uno)"
+          
           echo "Haciendo push..."
           git push -f "${REPO_URL}" "${BRANCH_NAME}"
+          
           echo "Push completado"
 
       - name: Crear PR en repositorio privado
@@ -87,11 +109,18 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           BRANCH_NAME="entrega-${ALUMNO}"
-          echo "Buscando PR existente..."
+          
+          echo "Esperando 10 segundos para que GitHub indexe la rama..."
+          sleep 10
+          
+          echo "Buscando PR existente para: ${BRANCH_NAME}"
           PR_LIST=$(curl -s \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$REPO_DESTINO/pulls?head=jgotuniversidad:${BRANCH_NAME}&base=develop&state=open")
+          
+          echo "Respuesta de búsqueda: $PR_LIST"
+          
           if echo "$PR_LIST" | grep -q '"number"'; then
             EXISTING=$(echo "$PR_LIST" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
             echo "Actualizando PR #${EXISTING}"
@@ -101,17 +130,31 @@ jobs:
               -H "Content-Type: application/json" \
               "https://api.github.com/repos/$REPO_DESTINO/pulls/$EXISTING" \
               -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"body\":\"PR Original: ${PR_URL_ORIGINAL}\"}"
-            echo "PR actualizado"
+            echo "PR #${EXISTING} actualizado"
           else
-            echo "Creando nuevo PR"
+            echo "Creando nuevo PR..."
+          
+            # Verificar commits entre ramas antes de crear PR
+            COMMITS_CHECK=$(curl -s \
+              -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO_DESTINO/compare/develop...${BRANCH_NAME}")
+          
+            if echo "$COMMITS_CHECK" | grep -q '"ahead_by":[1-9]'; then
+              echo "Hay commits diferentes, procediendo..."
+            else
+              echo "Advertencia: No se detectan commits diferentes. Intentando igual..."
+            fi
+          
             CREATE_RESPONSE=$(curl -s -w "|||HTTP:%{http_code}" -X POST \
               -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -H "Content-Type: application/json" \
               "https://api.github.com/repos/$REPO_DESTINO/pulls" \
               -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"head\":\"${BRANCH_NAME}\",\"base\":\"develop\",\"body\":\"PR Original: ${PR_URL_ORIGINAL}\"}")
+          
             HTTP_CODE=$(echo "$CREATE_RESPONSE" | grep -o '|||HTTP:[0-9]*' | cut -d: -f2)
             RESPONSE_BODY=$(echo "$CREATE_RESPONSE" | sed 's/|||HTTP:[0-9]*//')
+          
             if [ "$HTTP_CODE" = "201" ]; then
               NEW_PR=$(echo "$RESPONSE_BODY" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
               echo "PR #${NEW_PR} creado exitosamente"
