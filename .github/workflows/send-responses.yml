@@ -56,21 +56,19 @@ jobs:
           git clone "${REPO_URL}" workdir
           cd workdir
           
-          echo ">>> Configurando git..."
-          git config user.name "Evaluador Automático"
-          git config user.email "evaluador@universidad.edu"
+          # ✅ CONFIGURAR GIT DESPUÉS DE CD + USAR --local
+          echo ">>> Configurando git (local)..."
+          git config --local user.name "Evaluador Automático"
+          git config --local user.email "evaluador@universidad.edu"
           
           echo ">>> Asegurando rama develop como base..."
-          # Fetch normal (sin especificar ref:ref que causa conflicto)
           git fetch origin
           
-          # Intentar checkout de develop, fallback a main o master
           if git show-ref --verify --quiet refs/remotes/origin/develop; then
             git checkout develop
             echo "Base: develop"
           elif git show-ref --verify --quiet refs/remotes/origin/main; then
             git checkout main
-            # Crear develop si no existe
             git checkout -b develop
             git push -u origin develop
             echo "Base: main -> develop creada"
@@ -111,7 +109,9 @@ jobs:
             echo "Marker forzado agregado"
           fi
           
-          git commit -m "Entrega: ${ALUMNO} - ${PR_URL_ORIGINAL}"
+          # ✅ USAR --author EXPLÍCITO COMO FALLBACK
+          git commit --author="Evaluador Automático <evaluador@universidad.edu>" -m "Entrega: ${ALUMNO} - ${PR_URL_ORIGINAL}"
+          
           NEW_COMMIT=$(git rev-parse HEAD)
           echo "Commit creado: ${NEW_COMMIT}"
           
