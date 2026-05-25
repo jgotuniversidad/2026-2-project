@@ -4,49 +4,121 @@ on:
   pull_request_target:
     branches:
       - develop
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   copy-to-prof-repo:
     runs-on: ubuntu-latest
     steps:
-      - name: Code Checkout
+      # ─────────────────────────────────────────────────────────────
+      # STEP 0: Validación rápida de configuración
+      # ─────────────────────────────────────────────────────────────
+      - name: Validar configuración
+        env:
+          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
+          REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
+        run: |
+          echo "=== Validando configuración ==="
+          
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::El secreto PROFE_GITHUB_TOKEN no está disponible"
+            exit 1
+          fi
+          
+          # Probar acceso al repo privado vía API
+          if ! curl -sf -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_DESTINO" > /dev/null; then
+            echo "::error::No se puede acceder al repositorio privado. Verifica permisos del token."
+            exit 1
+          fi
+          
+          echo "✅ Configuración válida"
+
+      # ─────────────────────────────────────────────────────────────
+      # STEP 1: Checkout del código del alumno
+      # ─────────────────────────────────────────────────────────────
+      - name: Checkout código del alumno
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
+      # ─────────────────────────────────────────────────────────────
+      # STEP 2: Configurar Git
+      # ─────────────────────────────────────────────────────────────
       - name: Configurar Git
         run: |
           git config --global user.name "Evaluador Automático"
           git config --global user.email "evaluador@universidad.edu"
+          git config --global --add safe.directory "*"
 
-      - name: Empujar rama y crear PR en repositorio privado
+      # ─────────────────────────────────────────────────────────────
+      # STEP 3: Push al repositorio privado
+      # ─────────────────────────────────────────────────────────────
+      - name: Push a repositorio privado
         env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }} # Usamos la variable nativa de GitHub CLI
+          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
           ALUMNO: ${{ github.event.pull_request.user.login }}
-          URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
         run: |
-          RAMA_LOCAL="entrega-${ALUMNO}"
+          BRANCH_NAME="entrega-${ALUMNO}"
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          # 1. Validar que el entorno detecte el token correctamente
-          if [ -z "$GH_TOKEN" ]; then
-            echo "Error: El secreto PROFE_GITHUB_TOKEN no está llegando al script."
+          echo "Pushing to ${REPO_DESTINO} branch: ${BRANCH_NAME}"
+          
+          if ! git push -f "${REPO_URL}" "HEAD:refs/heads/${BRANCH_NAME}"; then
+            echo "::error::Falló el push al repositorio privado"
             exit 1
           fi
           
-          # 2. Configurar Git para usar el token de la CLI de forma transparente en el Push
-          gh auth setup-git
+          echo "✅ Push completado"
+
+      # ─────────────────────────────────────────────────────────────
+      # STEP 4: Crear/Actualizar PR en repo privado (API simple)
+      # ─────────────────────────────────────────────────────────────
+      - name: Crear PR en repositorio privado
+        env:
+          GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
+          REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
+          ALUMNO: ${{ github.event.pull_request.user.login }}
+          PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          BRANCH_NAME="entrega-${ALUMNO}"
           
-          # 3. Hacer el push directo usando la URL estándar de GitHub (la CLI se encarga de la clave)
-          git push -f "https://github.com/${REPO_DESTINO}.git" HEAD:refs/heads/${RAMA_LOCAL}
+          # Buscar PR existente
+          EXISTING=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_DESTINO/pulls?head=jgotuniversidad:${BRANCH_NAME}&base=develop&state=open" \
+            | grep -o '"number":[0-9]*' | head -1 | grep -o '[0-9]*')
           
-          # 4. Crear el Pull Request en el repositorio privado
-          gh pr create \
-            --repo "${REPO_DESTINO}" \
-            --head "${RAMA_LOCAL}" \
-            --base "develop" \
-            --title "Entrega de: ${ALUMNO}" \
-            --body "Código enviado automáticamente. PR Original: ${URL_ORIGINAL}" || echo "La rama ha sido actualizada en el repositorio privado."
+          PR_BODY="Entrega automatizada desde: ${PR_URL_ORIGINAL}"
+          PR_TITLE_FULL="Entrega: ${PR_TITLE} (${ALUMNO})"
+          
+          if [ -n "$EXISTING" ]; then
+            echo "Actualizando PR #${EXISTING}"
+            curl -sf -X PATCH \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO_DESTINO/pulls/$EXISTING" \
+              -d "{\"title\":\"${PR_TITLE_FULL}\",\"body\":\"${PR_BODY}\"}" \
+              || echo "⚠️ No se pudo actualizar el PR existente"
+          else
+            echo "Creando nuevo PR"
+            RESPONSE=$(curl -sf -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO_DESTINO/pulls" \
+              -d "{\"title\":\"${PR_TITLE_FULL}\",\"head\":\"${BRANCH_NAME}\",\"base\":\"develop\",\"body\":\"${PR_BODY}\"}")
+          
+            if echo "$RESPONSE" | grep -q '"number"'; then
+              NEW_PR=$(echo "$RESPONSE" | grep -o '"number":[0-9]*' | grep -o '[0-9]*')
+              echo "✅ PR #${NEW_PR} creado en repo privado"
+            else
+              echo "⚠️ No se pudo crear el PR (respuesta: $RESPONSE)"
+            fi
+          fi
