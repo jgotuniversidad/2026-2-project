@@ -47,6 +47,11 @@ jobs:
           ALUMNO: ${{ github.event.pull_request.user.login }}
           PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          # ✅ VARIABLES DE ENTORNO GIT - Siempre funcionan
+          GIT_AUTHOR_NAME: "Evaluador Automático"
+          GIT_AUTHOR_EMAIL: "evaluador@universidad.edu"
+          GIT_COMMITTER_NAME: "Evaluador Automático"
+          GIT_COMMITTER_EMAIL: "evaluador@universidad.edu"
         run: |
           # Variables
           BRANCH_NAME="entrega-${ALUMNO}"
@@ -56,10 +61,9 @@ jobs:
           git clone "${REPO_URL}" workdir
           cd workdir
           
-          # ✅ CONFIGURAR GIT DESPUÉS DE CD + USAR --local
-          echo ">>> Configurando git (local)..."
-          git config --local user.name "Evaluador Automático"
-          git config --local user.email "evaluador@universidad.edu"
+          # ✅ Config adicional como respaldo (aunque las env vars ya funcionan)
+          git config user.name "Evaluador Automático"
+          git config user.email "evaluador@universidad.edu"
           
           echo ">>> Asegurando rama develop como base..."
           git fetch origin
@@ -109,8 +113,9 @@ jobs:
             echo "Marker forzado agregado"
           fi
           
-          # ✅ USAR --author EXPLÍCITO COMO FALLBACK
-          git commit --author="Evaluador Automático <evaluador@universidad.edu>" -m "Entrega: ${ALUMNO} - ${PR_URL_ORIGINAL}"
+          # ✅ COMMIT CON -c PARA CONFIG INLINE (doble seguridad)
+          git -c user.name="Evaluador Automático" -c user.email="evaluador@universidad.edu" \
+            commit -m "Entrega: ${ALUMNO} - ${PR_URL_ORIGINAL}"
           
           NEW_COMMIT=$(git rev-parse HEAD)
           echo "Commit creado: ${NEW_COMMIT}"
