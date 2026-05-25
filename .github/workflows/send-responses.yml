@@ -1,4 +1,4 @@
-name: Enviar Entrega al Repositorio de Evaluación
+name: Sincronizar Entrega a Repo Privado
 
 on:
   pull_request_target:
@@ -8,10 +8,9 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  copy-to-prof-repo:
+  sync-to-private:
     runs-on: ubuntu-latest
     steps:
       - name: Validar configuración
@@ -20,7 +19,7 @@ jobs:
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::Token no disponible"
+            echo "::error::Token PROFE_GITHUB_TOKEN no disponible"
             exit 1
           fi
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -35,35 +34,34 @@ jobs:
       - name: Checkout código del alumno
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           fetch-depth: 0
           persist-credentials: false
           path: student-code
 
-      - name: Preparar y sincronizar entrega
+      - name: Sincronizar a repo privado
         env:
           GH_TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
           ALUMNO: ${{ github.event.pull_request.user.login }}
-          PR_URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          BRANCH_ORIGINAL: ${{ github.event.pull_request.head.ref }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
           GIT_AUTHOR_NAME: "Evaluador Automático"
           GIT_AUTHOR_EMAIL: "evaluador@universidad.edu"
           GIT_COMMITTER_NAME: "Evaluador Automático"
           GIT_COMMITTER_EMAIL: "evaluador@universidad.edu"
         run: |
-          # Variables
-          BRANCH_NAME="entrega-${ALUMNO}"
           REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          echo ">>> Clonando repo privado..."
+          echo "Clonando repo privado..."
           git clone "${REPO_URL}" workdir
           cd workdir
           
           git config user.name "Evaluador Automático"
           git config user.email "evaluador@universidad.edu"
           
-          echo ">>> Asegurando rama develop como base..."
+          echo "Actualizando referencias remotas..."
           git fetch origin
           
           if git show-ref --verify --quiet refs/remotes/origin/develop; then
@@ -71,155 +69,38 @@ jobs:
             echo "Base: develop"
           elif git show-ref --verify --quiet refs/remotes/origin/main; then
             git checkout main
-            git checkout -b develop
-            git push -u origin develop
-            echo "Base: main -> develop creada"
+            echo "Base: main"
           else
             git checkout master
-            git checkout -b develop
-            git push -u origin develop
-            echo "Base: master -> develop creada"
+            echo "Base: master"
           fi
           
-          BASE_COMMIT=$(git rev-parse HEAD)
-          echo "Commit base: ${BASE_COMMIT}"
+          echo "Creando/actualizando rama: ${BRANCH_ORIGINAL}"
+          git checkout -B "${BRANCH_ORIGINAL}"
           
-          echo ">>> Creando rama de entrega: ${BRANCH_NAME}"
-          git checkout -B "${BRANCH_NAME}"
-          
-          echo ">>> Limpiando contenido previo..."
+          echo "Limpiando contenido previo..."
           git rm -rf . 2>/dev/null || true
           find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} + 2>/dev/null || true
           
-          echo ">>> Copiando código del alumno..."
+          echo "Copiando código del alumno..."
           cp -rf ../student-code/. ./
           
-          echo ">>> Creando marker file único..."
-          UNIQUE_ID="${RANDOM}${RANDOM}$(date +%s%N)"
-          echo "{\"alumno\":\"${ALUMNO}\",\"unique_id\":\"${UNIQUE_ID}\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > .entrega-marker.json
+          echo "Agregando metadata de entrega..."
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "{\"alumno\":\"${ALUMNO}\",\"rama\":\"${BRANCH_ORIGINAL}\",\"pr_original\":\"${PR_URL}\",\"sincronizado\":\"${TIMESTAMP}\"}" > .entrega-info.json
           
-          echo ">>> Estado git antes del commit:"
+          echo "Estado antes del commit:"
           git status --short
           
-          echo ">>> Creando commit..."
+          echo "Creando commit..."
           git add -A
+          COMMIT_MSG="Entrega sincronizada: ${ALUMNO} - Rama: ${BRANCH_ORIGINAL} - PR: ${PR_URL}"
+          git -c user.name="Evaluador Automático" -c user.email="evaluador@universidad.edu" commit -m "${COMMIT_MSG}"
           
-          if git diff --cached --quiet; then
-            echo "# Force-$(date +%s%N)" >> .entrega-marker.json
-            git add .entrega-marker.json
-          fi
+          echo "Haciendo push a repo privado..."
+          git push -f "${REPO_URL}" "${BRANCH_ORIGINAL}"
           
-          git -c user.name="Evaluador Automático" -c user.email="evaluador@universidad.edu" \
-            commit -m "Entrega: ${ALUMNO} - ${PR_URL_ORIGINAL}"
-          
-          NEW_COMMIT=$(git rev-parse HEAD)
-          echo "Commit creado: ${NEW_COMMIT}"
-          
-          echo ">>> Verificando diferencia LOCAL con origin/develop..."
-          COMMITS_AHEAD=$(git rev-list origin/develop..HEAD --count 2>/dev/null || echo "0")
-          echo "Commits ahead (local git): ${COMMITS_AHEAD}"
-          
-          echo ">>> Haciendo push..."
-          git push -f "${REPO_URL}" "${BRANCH_NAME}"
-          echo "Push completado"
-          
-          # ✅ DEBUG: Verificar ramas remotas inmediatamente después del push
-          echo ">>> DEBUG: Ramas remotas después del push:"
-          git ls-remote "${REPO_URL}" | grep -E "(develop|${BRANCH_NAME})" || echo "(no se encontraron)"
-          
-          # ✅ ESPERA EXTENDIDA + RETRY PARA INDEXACIÓN DE GITHUB
-          echo ">>> Esperando indexación de GitHub (60s con verificaciones intermedias)..."
-          for i in 15 30 45 60; do
-            sleep 15
-            echo "  [${i}s] Verificando si la rama es visible vía API..."
-            BRANCH_CHECK=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO_DESTINO/branches/${BRANCH_NAME}")
-            if [ "$BRANCH_CHECK" = "200" ]; then
-              echo "  ✅ Rama visible en API después de ${i}s"
-              break
-            else
-              echo "  ⏳ Rama aún no visible (HTTP ${BRANCH_CHECK})"
-            fi
-          done
-          
-          # ✅ VERIFICAR COMMITS VÍA API CON RETRY
-          echo ">>> Verificando commits vía API con retry..."
-          AHEAD_BY=0
-          for attempt in 1 2 3; do
-            COMPARE=$(curl -s -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO_DESTINO/compare/develop...${BRANCH_NAME}")
-            AHEAD_BY=$(echo "$COMPARE" | grep -o '"ahead_by":[0-9]*' | grep -o '[0-9]*' | head -1)
-            AHEAD_BY=${AHEAD_BY:-0}
-            echo "  Intento ${attempt}: ahead_by = ${AHEAD_BY}"
-            if [ "${AHEAD_BY}" -gt 0 ]; then
-              echo "  ✅ Commits detectados vía API"
-              break
-            elif [ "${attempt}" -lt 3 ]; then
-              echo "  ⏳ Reintentando en 10s..."
-              sleep 10
-            fi
-          done
-          
-          if [ "${AHEAD_BY}" -eq 0 ]; then
-            echo "::warning::API no detecta commits, pero procedemos con creación de PR (puede ser delay de indexación)"
-          fi
-          
-          # ✅ CREAR PR CON FORMATO CORRECTO Y RETRY
-          echo ">>> Creando/actualizando PR..."
-          
-          # Formato correcto para head: "owner:branch" para evitar ambigüedades
-          REPO_OWNER=$(echo "$REPO_DESTINO" | cut -d'/' -f1)
-          HEAD_REF="${REPO_OWNER}:${BRANCH_NAME}"
-          
-          PR_CREATED=false
-          for pr_attempt in 1 2; do
-            # Buscar PR existente
-            PR_LIST=$(curl -s \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO_DESTINO/pulls?head=${HEAD_REF}&base=develop&state=open")
-          
-            if echo "$PR_LIST" | grep -q '"number"'; then
-              EXISTING=$(echo "$PR_LIST" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
-              echo "Actualizando PR existente #${EXISTING}"
-              curl -s -X PATCH \
-                -H "Authorization: token $GH_TOKEN" \
-                -H "Content-Type: application/json" \
-                "https://api.github.com/repos/$REPO_DESTINO/pulls/$EXISTING" \
-                -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"body\":\"PR Original: ${PR_URL_ORIGINAL}\"}"
-              echo "✅ PR #${EXISTING} actualizado"
-              PR_CREATED=true
-              break
-            else
-              echo "Creando nuevo PR (intento ${pr_attempt})..."
-          
-              CREATE_RESP=$(curl -s -w "|||HTTP:%{http_code}" -X POST \
-                -H "Authorization: token $GH_TOKEN" \
-                -H "Content-Type: application/json" \
-                "https://api.github.com/repos/$REPO_DESTINO/pulls" \
-                -d "{\"title\":\"Entrega: ${PR_TITLE} (${ALUMNO})\",\"head\":\"${HEAD_REF}\",\"base\":\"develop\",\"body\":\"PR Original: ${PR_URL_ORIGINAL}\"}")
-          
-              HTTP_CODE=$(echo "$CREATE_RESP" | grep -o '|||HTTP:[0-9]*' | cut -d: -f2)
-              RESP_BODY=$(echo "$CREATE_RESP" | sed 's/|||HTTP:[0-9]*//')
-          
-              if [ "$HTTP_CODE" = "201" ]; then
-                NEW_PR=$(echo "$RESP_BODY" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
-                echo "✅✅✅ PR #${NEW_PR} CREADO EXITOSAMENTE ✅✅✅"
-                PR_CREATED=true
-                break
-              elif echo "$RESP_BODY" | grep -q "No commits between"; then
-                echo "⚠️ GitHub reporta 'No commits' (posible delay). Reintentando en 15s..."
-                sleep 15
-              else
-                echo "⚠️ Error HTTP ${HTTP_CODE}: ${RESP_BODY}"
-                break
-              fi
-            fi
-          done
-          
-          if [ "$PR_CREATED" = false ]; then
-            echo "::warning::No se pudo crear/actualizar el PR automáticamente."
-            echo "💡 El código fue pushado a la rama: ${BRANCH_NAME}"
-            echo "🔗 Puedes crear el PR manualmente en: https://github.com/${REPO_DESTINO}/compare/develop...${BRANCH_NAME}"
-          fi
+          echo "Sincronizacion completada"
+          echo "Repo: ${REPO_DESTINO}"
+          echo "Rama: ${BRANCH_ORIGINAL}"
+          echo "URL: https://github.com/${REPO_DESTINO}/tree/${BRANCH_ORIGINAL}"
