@@ -1,7 +1,8 @@
 name: Enviar Entrega al Repositorio de Evaluación
 
 on:
-  pull_request:
+  # Cambiamos 'pull_request' por 'pull_request_target' para desbloquear los secretos de forma segura
+  pull_request_target:
     branches:
       - develop
     types: [opened, synchronize]
@@ -13,6 +14,7 @@ jobs:
       - name: Code Checkout
         uses: actions/checkout@v4
         with:
+          # Esto asegura que descargue el código que el alumno está enviando en el PR
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
@@ -23,7 +25,6 @@ jobs:
 
       - name: Empujar rama y crear PR en repositorio privado
         env:
-          # Forzamos a Node a usar la versión 24 para quitar la advertencia que viste
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
           TOKEN: ${{ secrets.PROFE_GITHUB_TOKEN }}
           REPO_DESTINO: "jgotuniversidad/2026-2-project-responses"
@@ -31,17 +32,18 @@ jobs:
           URL_ORIGINAL: ${{ github.event.pull_request.html_url }}
         run: |
           RAMA_LOCAL="entrega-${ALUMNO}"
+          
+          # 1. Autenticar la herramienta CLI de GitHub
+          echo "${TOKEN}" | gh auth login --with-token
+          
+          # 2. Configurar la URL remota usando el protocolo HTTPS autenticado
           REMOTE_URL="https://x-access-token:${TOKEN}@github.com/${REPO_DESTINO}.git"
           
-          # Autenticar las herramientas globales de GitHub primero
-          echo "${TOKEN}" | gh auth login --with-token
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
-          # Conectar y empujar al repositorio destino
+          # 3. Conectar y empujar al repositorio destino privado
           git remote add destino "$REMOTE_URL"
           git push -f destino HEAD:refs/heads/${RAMA_LOCAL}
           
-          # Crear el Pull Request en el repositorio privado
+          # 4. Crear el Pull Request en el repositorio privado del profesor
           gh pr create \
             --repo "${REPO_DESTINO}" \
             --head "${RAMA_LOCAL}" \
